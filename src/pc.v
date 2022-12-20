@@ -1,6 +1,6 @@
 //PC Address Controller for MIPS-32.
 //with a quite toy-like saturating predictor of 1024 size 
-// `include "def.v"
+`include "def.v"
 module pc (
     input  wire     in_clk,
     input  wire     in_rst, 

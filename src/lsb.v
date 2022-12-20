@@ -1,5 +1,5 @@
 //A load/Store Queue for execute stage with inner Address Adder.
-// `include "def.v"
+`include "def.v"
 module lsb (
     input  wire     in_clk,
     input  wire     in_rst,

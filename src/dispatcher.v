@@ -1,5 +1,5 @@
 //ignore io_buffer_full signal when performming simulation, 
-// `include "def.v"
+`include "def.v"
 module dispatcher (
     input  wire     in_clk,
     input  wire     in_rst,

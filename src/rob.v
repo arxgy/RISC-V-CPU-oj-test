@@ -1,5 +1,5 @@
 //ReOrder Buffer module
-// `include "def.v"
+`include "def.v"
 module rob (
     input  wire     in_clk,
     input  wire     in_rst,

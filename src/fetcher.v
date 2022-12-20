@@ -1,7 +1,7 @@
 
 //A port for Mem access from Instr Access and Data Access, issue Instr to decoder.
 //with 256 size icache
-// `include "def.v"
+`include "def.v"
 
 module fetcher (
     input  wire     in_clk,
