@@ -1,216 +1,214 @@
-//ReOrder Buffer module
-`include "def.v"
-module rob (
-    input  wire     in_clk,
-    input  wire     in_rst,
-    input  wire     in_rdy,
-    output reg      out_flush_enable,
-    output wire     out_capacity_full,
-    //connect with control-signal
+`include "defines.v"
 
-    input  wire     in_decoder_assign_enable,
-    input  wire     [`OPERATOR_WIDTH] in_decoder_type,
-    input  wire     [`REG_WIDTH]      in_decoder_rd,    
-    input  wire     [`ADDRESS_WIDTH]  in_decoder_pc,   
-        //assign new rob entry
-    input  wire     [`ROB_WIDTH]  in_decoder_rs_reorder,
-    input  wire     [`ROB_WIDTH]  in_decoder_rt_reorder,
-    output wire                   out_decoder_rs_ready,
-    output wire                   out_decoder_rt_ready,
-    output wire     [`DATA_WIDTH] out_decoder_rs_value,
-    output wire     [`DATA_WIDTH] out_decoder_rt_value,
-    output wire     [`ROB_WIDTH]  out_decoder_tail,
-        //query entry message (conbinational)
-    //connect with Decoder  
-    output reg      out_lsb_io_read_commit,
-    output wire     out_lsb_store_enable,
-    input  wire     in_lsb_store_over,
-    //connect with lsb 
+module ROB (
+    input  wire             clk, rst, rdy,    
+    output reg              jp_wrong,                                   // 跳转错误
 
-    output reg      out_reg_commit_enable,
-    output reg      [`REG_WIDTH] out_reg_commit_rd,
-    output reg      [`DATA_WIDTH]out_reg_commit_value,
-    output reg      [`ROB_WIDTH] out_reg_commit_reorder,
-    //connect with Reg
+    // InstFetch
+    output reg  [`RLEN]     jp_pc_IF,                                   // 正确跳转到的 pc
+    output reg              jp_commit, 
 
-    output reg      [`ADDRESS_WIDTH] out_pc_branch_pc,
-    //connect with PC_control
+    // CDB
+    output reg  [`RBID]     front, rear,                                // ROB 的头尾
 
-    input  wire     in_alu_broadcast_enable,
-    input  wire     [`ROB_WIDTH]     in_alu_broadcast_reorder,
-    input  wire     [`DATA_WIDTH]    in_alu_broadcast_result,
-    input  wire     [`ADDRESS_WIDTH] in_alu_broadcast_branch,
-    //alu broadcast
+    // Decoder
+    input  wire [31: 0]     debug_ins_ID, 
+    input  wire             jp_flag, ins_flag,                          // 预测跳转为 1，不跳转为 0； 指令是否有效
+    input  wire [`RIDX]     rd,                                         // 目标寄存器
+    input  wire [`ILEN]     insty,                                      // 指令
+    input  wire [`RLEN]     jp_pc,                                      // IF 阶段算好的 pc
+    output wire             ROB_full, rs1_ready_ID, rs2_ready_ID,       // ROB 是否满了； rs1，rs2 是否已经拿到真正的值，是为 1，否则为 0
+    output wire [`RLEN]     reg1_ID, reg2_ID,                           // 两个寄存器的值，若没拿到真正的值，则为 ROB 编号
 
-    input  wire     in_lsb_broadcast_enable,
-    input  wire     [`ROB_WIDTH]    in_lsb_broadcast_reorder,
-    input  wire     [`DATA_WIDTH]   in_lsb_broadcast_result,
-    input  wire     in_lsb_braodcast_io_read
-    
-    //lsb broadcast
+    // RegFile 
+    input  wire [`RBID]     rs1_idx, rs2_idx,                           // rs1，rs2 对应的 ROB 编号
+    output wire             upd_flag,                                   // 是否有新的指令加入 ROB
+    output wire [`RBID]     upd_idx,                                    // 新指令在 ROB 的位置
+    output wire [`RIDX]     upd_rd,                                     // 新指令的目标寄存器
+    output wire             write_flag,                                 // 是否 commit 了一条指令写寄存器
+    output wire [`RBID]     write_idx,                                  // commit 的 ROB 编号
+    output wire [`RIDX]     write_rd,                                   // commit 的目标寄存器
+    output wire [`RLEN]     new_val,                                    // commit 的寄存器值
+
+    // RS
+    input  wire             val_flag_RS,                                // RS 是否发来更新
+    input  wire [`RBID]     val_idx_RS,                                 // RS 更新对应 ROB 编号
+    input  wire [`RLEN]     val_RS,                                     // RS 更新的值
+
+    // LSB
+    input  wire             val_flag_LSB,                               // LSB 是否发来更新
+    input  wire [`RBID]     val_idx_LSB,                                // LSB 更新对应 ROB 编号
+    input  wire [`RLEN]     val_LSB,                                    // LSB 更新的值
+    output wire             store_flag                                  // ROB commit，允许 LSB 中第一条 store 指令执行
 );
-initial begin
-    fd = $fopen("inst.out", "w");
-end
-    integer fd;
-    integer iter;
-    reg                   empty;
-    reg [`ROB_WIDTH]      head, tail;      //next entry
-    reg [`ADDRESS_WIDTH]  pc_entry     [`ROB_ENTRY];
-    reg [`OPERATOR_WIDTH] type_entry   [`ROB_ENTRY];
-    reg [`REG_WIDTH]      dest_entry   [`ROB_ENTRY];
-    reg [`DATA_WIDTH]     value_entry  [`ROB_ENTRY];
-    reg [`ADDRESS_WIDTH]  branch_entry [`ROB_ENTRY]; //default: 4, jal: sext(imm)
-    reg                   io_read_entry[`ROB_ENTRY];
-    reg                   ready_entry  [`ROB_ENTRY];
-    reg [31:0]  inst_counter;
-    assign out_decoder_rs_ready = ready_entry[in_decoder_rs_reorder];
-    assign out_decoder_rt_ready = ready_entry[in_decoder_rt_reorder];
-    assign out_decoder_rs_value = value_entry[in_decoder_rs_reorder];
-    assign out_decoder_rt_value = value_entry[in_decoder_rt_reorder];
-    assign out_decoder_tail     = tail;
-    assign out_lsb_store_enable = is_store(type_entry[head]);
-    assign out_capacity_full = (head == tail + 4'd1 || (head == `HEAD_ROB_ENTRY && tail == `TAIL_ROB_ENTRY) || (tail == head) && !empty);
-    initial begin
-        inst_counter <= 0;
-    end
-    wire [`OPERATOR_WIDTH] dbg_head_tp = type_entry[head];
-    wire [`ADDRESS_WIDTH]  dbg_head_pc = pc_entry  [head];
-    wire dbg_commit_reg_a0 = out_reg_commit_rd == 5'd10;
-    wire dbg_commit_reg_a1 = out_reg_commit_rd == 5'd11;
-    wire dbg_commit_reg_a3 = out_reg_commit_rd == 5'd13;
-    wire dbg_commit_reg_a5 = out_reg_commit_rd == 5'd15;
-    wire dbg_commit_reg_a6 = out_reg_commit_rd == 5'd16;
-    wire dbg_commit_reg_s0 = out_reg_commit_rd == 5'd8;
-    wire dbg_commit_reg_s1 = out_reg_commit_rd == 5'd9;
-    wire dbg_commit_reg_s4 = out_reg_commit_rd == 5'd20;
-    wire dbg_commit_reg_s6 = out_reg_commit_rd == 5'd22;
-    wire dbg_commit_reg_s11 = out_reg_commit_rd == 5'd27;
-    
-    always @(posedge in_lsb_store_over) begin
-        $fdisplay(fd, "%h",pc_entry[head], " ", inst_counter);    
-        inst_counter = inst_counter + 1;
-        if (head == `TAIL_ROB_ENTRY) begin
-            head <= `HEAD_ROB_ENTRY;
-            if (tail == `HEAD_ROB_ENTRY) empty <= `TRUE;
+    reg  [31: 0]    debug_ins   [`RBSZ];
+
+    reg             full;                                               // ROB 是否已满
+
+    reg  [`RBSZ]    ready;                                              // 是否可以 commit
+    reg  [`RBSZ]    jp_check;                                           // 预测跳转 / 不跳转
+    reg  [`RLEN]    val         [`RBSZ];                                // ROB 中储存的值
+    reg  [`RIDX]    reg_idx     [`RBSZ];                                // 目标寄存器的编号
+    reg  [`ILEN]    ins         [`RBSZ];                                // 保存的指令
+
+    reg             jalr_flag;                                          // 最旧的 jalr 指令是否存在
+    reg  [`RIDX]    jalr_idx;                                           // 最旧的 jalr 指令在 ROB 中的编号
+    reg  [`RLEN]    jalr_pc;                                            // 最旧的 jalr 指令想跳转到哪
+
+    reg  [`ILEN]    debug_out;
+
+    // assign ROB_full = full;
+    assign ROB_full = ready[front] ? (full && ins_flag)  : (full || (ins_flag && (front == (-(~rear)))));
+
+    assign rs1_ready_ID = ready[rs1_idx];
+    assign rs2_ready_ID = ready[rs2_idx];
+    assign reg1_ID = ready[rs1_idx] ? val[rs1_idx] : rs1_idx;
+    assign reg2_ID = ready[rs2_idx] ? val[rs2_idx] : rs2_idx;
+
+    // always @(*) begin
+    //     $display("rs2_idx:", rs2_idx);
+    //     $display("ready:", ready[rs2_idx]);
+    //     $display("reg2:", val[rs2_idx]);
+    // end
+
+    assign upd_flag = ins_flag ? (rd != 0) : `False;
+    assign upd_idx = rear;
+    assign upd_rd = rd;
+
+    assign store_flag = (full || front != rear) && (ins[front] == `SB || ins[front] == `SH || ins[front] == `SW);
+
+    assign write_flag = (full || front != rear) && ready[front] && (!ins[front][5] || ins[front] == `JAL || ins[front] == `JALR);
+    assign write_idx = front;
+    assign write_rd = reg_idx[front];
+    assign new_val = val[front];
+
+    integer i;
+
+    reg [31: 0]  debug_cnt;
+    reg [31: 0] debug_now;
+    always @(posedge clk) begin
+        debug_now <= debug_now + 1;
+        // $display("ROB: ", debug_now);
+        if (rst) begin
+            debug_now <= 0;
+            debug_cnt <= 1;
+        end
+
+        if (rst || jp_wrong) begin
+            jp_wrong <= `False;
+            jp_commit <= `False;
+            jp_pc_IF <= `null32;
+
+            full <= `False;
+            front <= `null4;
+            rear <= `null4;
+
+            jalr_flag <= `False;
+            jalr_idx <= `null5;
+            jalr_pc <= `null32; // 可以去掉
+
+            ready <= `null16;
+            // ready <= ~(`null16);
+        end
+        else if (!rdy) begin
+            
         end
         else begin
-            head <= head + 4'd1;
-            if (head + 4'd1 == tail) empty <= `TRUE;
-        end     
-    end
-    
-    always @(posedge in_clk) begin
-        if (in_rst) begin
-            head  <= `HEAD_ROB_ENTRY;
-            tail  <= `HEAD_ROB_ENTRY;
-            empty <= `TRUE;
-            out_flush_enable       <= `FALSE;
-            out_reg_commit_enable  <= `FALSE;
-            out_lsb_io_read_commit <= `FALSE;
-            for (iter = 1 ; iter < `ROB_SIZE ; iter = iter+1 ) begin
-                ready_entry[iter]  <= `FALSE;
-                pc_entry[iter] <= `ZERO_ADDR;
-            end
-        end
-        else if(in_rdy) begin            
-            //assign entry
-            if (in_decoder_assign_enable) begin
-                if (tail == `TAIL_ROB_ENTRY) tail <= `HEAD_ROB_ENTRY;
-                else tail <= tail + 4'd1;
-                empty <= `FALSE;
-                ready_entry[tail] <= `FALSE;
-                type_entry [tail] <= in_decoder_type;
-                dest_entry [tail] <= in_decoder_rd;
-                pc_entry[tail] <= in_decoder_pc;
-            end
-            //accept lsb/alu broadcast (no conflict)
-            if (in_lsb_broadcast_enable) begin //store: value, load:
-                ready_entry  [in_lsb_broadcast_reorder] <= `TRUE;
-                value_entry  [in_lsb_broadcast_reorder] <= in_lsb_broadcast_result;
-                io_read_entry[in_lsb_broadcast_reorder] <= in_lsb_braodcast_io_read;
-            end
-            if (in_alu_broadcast_enable) begin
-                ready_entry  [in_alu_broadcast_reorder] <= `TRUE;
-                value_entry  [in_alu_broadcast_reorder] <=  in_alu_broadcast_result;
-                branch_entry [in_alu_broadcast_reorder] <=  in_alu_broadcast_branch;
-                io_read_entry[in_alu_broadcast_reorder] <= `FALSE;
-            end
+            full <= ready[front] ? (full && ins_flag)  : (full || (ins_flag && (front == (-(~rear)))));
 
-            if (!empty && ready_entry[head] && !is_store(type_entry[head])) begin
-                $fdisplay(fd, "%h",pc_entry[head], " ", inst_counter);    
-                inst_counter = inst_counter + 1;
-                if (head == `TAIL_ROB_ENTRY) begin
-                    head <= `HEAD_ROB_ENTRY;
-                    if (tail == `HEAD_ROB_ENTRY) empty <= `TRUE;
+            if (ins_flag) begin
+                rear <= -(~rear);
+                debug_ins[rear] <= debug_ins_ID;
+                ready[rear] <= (insty == `SB || insty == `SH || insty == `SW || insty == `JAL || insty == `LUI || insty == `AUIPC);
+                // $display("rear:", rear);
+                // $display("jp_flag:", jp_flag);
+                jp_check[rear] <= jp_flag;
+                val[rear] <= jp_pc;
+                reg_idx[rear] <= rd;
+                ins[rear] <= insty;
+
+                if (insty == `JALR && jalr_flag == `False) begin
+                    // $display("insty JALR:", rs1_idx);
+                    jalr_flag <= `True;
+                    jalr_idx <= rear;
+                    jalr_pc <= `null32; // 可以去掉
+                end
+            end
+            // $display("front:", front);
+            // $display("store:", ins[front]);
+            // $display("store_flag:", store_flag);
+
+            debug_out <= ins[front];
+            // $display("jalr_pc:", "%h", val_RS, " jalr_idx:", "%h", jalr_idx, " %h", debug_now);
+            if (full || front != rear) begin
+                if (ready[front]) begin
+                    front <= -(~front);
+                    // $display("%h", debug_ins[front]);
+                    // $display("%h", debug_now, " %h", debug_ins[front], " ", debug_cnt);
+                    debug_cnt <= debug_cnt + 1;
+                end
+
+                if (ins[front] == `JALR) begin
+                    jp_commit <= `False;
+
+                    if (ready[front]) begin
+                        jp_wrong <= `True;
+                        jp_pc_IF <= jalr_pc;
+                    end
+                    
+                    if (val_flag_RS && val_idx_RS == front) begin
+                        // $display("%h", debug_ins[front]);
+                        // $display("%h", debug_now, " %h", debug_ins[front], " ", debug_cnt);
+                        debug_cnt <= debug_cnt + 1;
+                        jp_wrong <= `True;
+                        jp_pc_IF <= val_RS;
+                    end
+                end
+                else if (ins[front][5] && ins[front] != `JAL) begin
+                    jp_commit <= ready[front] || (val_flag_RS && val_idx_RS == front && jp_check[front] != val_RS[0]);
+
+                    if (ready[front] && jp_check[front]) begin
+                        jp_wrong <= `True;
+                        jp_pc_IF <= val[front];
+                    end
+
+                    if (val_flag_RS && val_idx_RS == front && jp_check[front] != val_RS[0]) begin
+                        // $display("%h", debug_ins[front]);
+                        // $display("%h", debug_now, " %h", debug_ins[front], " ", debug_cnt);
+                        debug_cnt <= debug_cnt + 1;
+                        jp_wrong <= `True;
+                        jp_pc_IF <= val[front];
+                    end
                 end
                 else begin
-                    head <= head + 4'd1;
-                    if (head + 4'd1 == tail) empty <= `TRUE;
-                end                 
-                //branch commit
-                if (is_branch(type_entry[head])) begin
-                    if (value_entry[head] != `ZERO_DATA) begin
-                        out_pc_branch_pc     <= branch_entry[head];
-                        out_flush_enable     <= `TRUE;
-                    end
-                    else begin
-                        out_flush_enable     <= `FALSE;
-                    end
-                    if (type_entry[head] == `JAL || type_entry[head] == `JALR) begin  
-                        out_reg_commit_enable  <= `TRUE;                    
-                        $fdisplay(fd, "commit rd: ", dest_entry[head], "; commit value ", value_entry[head]);
-                        out_reg_commit_rd      <= dest_entry[head];
-                        out_reg_commit_reorder <= head;
-                        out_reg_commit_value   <= value_entry[head];
-                    end
-                    else begin
-                        out_reg_commit_enable  <= `FALSE;
-                    end
-                    out_lsb_io_read_commit <= `FALSE;
-                end             
-                else begin                                //normal commit
-                    out_flush_enable      <= `FALSE;
-                    if (type_entry[head] != `NOP) begin
-                        $fdisplay(fd, "commit rd: ", dest_entry[head], "; commit value ", value_entry[head]);
-                        out_reg_commit_enable  <= `TRUE;
-                        out_reg_commit_rd      <= dest_entry[head];
-                        out_reg_commit_reorder <= head;
-                        out_reg_commit_value   <= value_entry[head];
-                    end
-                    else begin
-                        out_reg_commit_enable  <= `FALSE;
-                    end
-
-                    if (is_load(type_entry[head]) && io_read_entry[head]) begin
-                        out_lsb_io_read_commit <= `TRUE;
-                    end
-                    else begin
-                        out_lsb_io_read_commit <= `FALSE;   
-                    end
+                    jp_commit <= `False;
                 end
             end
             else begin
-                out_flush_enable       <= `FALSE;
-                out_reg_commit_enable  <= `FALSE;
-                out_lsb_io_read_commit <= `FALSE;
-            end 
-        
+                jp_commit <= `False;
+            end
+
+            if (val_flag_RS) begin
+                ready[val_idx_RS] <= `True;
+                if (ins[val_idx_RS][5] && !ins[val_idx_RS][4]) begin
+                    // $display("val_idx_RS jp:", val_idx_RS);
+                    jp_check[val_idx_RS] <= jp_check[val_idx_RS] != val_RS[0];
+                end 
+                else begin
+                    // $display("val_idx_RS:", val_idx_RS);
+                    val[val_idx_RS] <= val_RS;
+                end
+                
+                if (val_idx_RS == jalr_idx && ins[val_idx_RS] == `JALR) begin
+                    jalr_pc <= val_RS;
+                end
+            end
+
+            if (val_flag_LSB) begin
+                ready[val_idx_LSB] <= `True;
+                val[val_idx_LSB] <= val_LSB;
+            end
         end
     end
-    function reg is_branch(input [`OPERATOR_WIDTH] type) ;
-        begin
-            is_branch = (type == `JAL || type == `JALR||type == `BEQ || type == `BNE || type == `BLT || type == `BGE || type == `BLTU|| type == `BGEU);
-        end
-    endfunction
-    function reg is_store(input [`OPERATOR_WIDTH] type) ;
-        begin
-            is_store =  (type == `SB || type == `SH || type == `SW);
-        end
-    endfunction
-    function reg is_load (input [`OPERATOR_WIDTH] type);
-        begin
-            is_load =  (type == `LB || type == `LH ||  type == `LW || type == `LBU|| type == `LHU);
-        end
-    endfunction
-endmodule //rob
+    
+endmodule

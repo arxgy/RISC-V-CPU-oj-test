@@ -1,93 +1,60 @@
-//Just a Calculator. designed for calculate x[rd] value
-//pc is handled by adder in reserve station.
-`include "def.v"
-module alu (
-    input  wire     in_clk,
-    input  wire     in_rst,
-    input  wire     in_rdy,
-    //connect with control-signal
+`include "defines.v"
 
-    input  wire                       in_enable,
-    input  wire     [`OPERATOR_WIDTH] type,
-    input  wire     [`ADDRESS_WIDTH]  pc,
-    input  wire     [`DATA_WIDTH]     imm,
-    input  wire     [`DATA_WIDTH]     rs,   
-    input  wire     [`DATA_WIDTH]     rt,  
-    input  wire     [`ROB_WIDTH]      reorder,
-    //connect with ReserveStation (arithmetic step)
+module ALU (
+    input  wire             clk, rst, rdy, 
+    input  wire             jp_wrong,                                   // 跳转错误
 
-    output wire                      out_cdb_broadcast_enable,              //to rs, lsb,
-    output wire     [`ROB_WIDTH]     out_cdb_broadcast_reorder,
-    output reg      [`DATA_WIDTH]    out_cdb_broadcast_result,
-    output reg      [`ADDRESS_WIDTH] out_cdb_broadcast_branch                //only to rob
-    //cdb: connect with lsb, rs, rob
+    // CDB
+    output reg              val_flag,                                   // 是否发送给 CDB
+    output reg  [`RBID]     val_idx,                                    // ROB 编号
+    output reg  [`RLEN]     val,                                        // 发送的值
+
+    // RS
+    input  wire             ins_flag,                                   // ALU 是否发来算术指令
+    input  wire [`ILEN]     insty,                                      // 指令
+    input  wire [`RLEN]     val1, val2,                                 // 需要进行运算的值
+    input  wire [`RBID]     ROB_idx                                     // 目标 ROB 编号                
 );
-    assign out_cdb_broadcast_enable  = in_enable;
-    assign out_cdb_broadcast_reorder = reorder;
-    // assign out_cdb_broadcast_result = get_alu_result(type);
-    
-    always @(*) begin
-        if (in_enable) begin
-            case (type)
-                `NOP: 
-                    out_cdb_broadcast_result = `ZERO_DATA;
-                `LUI: 
-                    out_cdb_broadcast_result = imm;  
-                `AUIPC:
-                    out_cdb_broadcast_result= pc + imm;
-                `JAL: begin
-                    out_cdb_broadcast_result = pc + 4;
-                    out_cdb_broadcast_branch = pc + imm;
-                end
-                `JALR:begin
-                    out_cdb_broadcast_result = pc + 4;
-                    out_cdb_broadcast_branch = (rs + imm)&(~1);
-                end
-                `BEQ: begin
-                    out_cdb_broadcast_result = rs == rt;
-                    out_cdb_broadcast_branch = pc + imm;
-                end
-                `BNE: begin
-                    out_cdb_broadcast_result = rs != rt;
-                    out_cdb_broadcast_branch = pc + imm;
-                end
-                `BLT: begin
-                    out_cdb_broadcast_result = $signed(rs) <  $signed(rt);
-                    out_cdb_broadcast_branch = pc + imm;
-                end
-                `BGE: begin
-                    out_cdb_broadcast_result = $signed(rs) >= $signed(rt);
-                    out_cdb_broadcast_branch = pc + imm;
-                end
-                `BLTU:begin
-                    out_cdb_broadcast_result = rs <  rt;
-                    out_cdb_broadcast_branch = pc + imm;
-                end
-                `BGEU:begin
-                    out_cdb_broadcast_result = rs >= rt;
-                    out_cdb_broadcast_branch = pc + imm;
-                end
-                `ADDI: out_cdb_broadcast_result = rs + imm;
-                `SLTI:out_cdb_broadcast_result = $signed(rs) < $signed(imm);
-                `SLTIU:out_cdb_broadcast_result= rs < imm;
-                `XORI:out_cdb_broadcast_result = rs ^ imm;
-                `ORI: out_cdb_broadcast_result = rs | imm;
-                `ANDI:out_cdb_broadcast_result = rs & imm;
-                `SLLI:out_cdb_broadcast_result = rs << imm;
-                `SRLI:out_cdb_broadcast_result = rs >> imm;
-                `SRAI:out_cdb_broadcast_result = rs >>> imm;
 
-                `ADD: out_cdb_broadcast_result = rs + rt;
-                `SUB: out_cdb_broadcast_result = rs - rt;
-                `SLL: out_cdb_broadcast_result = rs << rt;
-                `SLT: out_cdb_broadcast_result = $signed(rs) < $signed(rt);
-                `SLTU:out_cdb_broadcast_result = rs < rt;
-                `XOR: out_cdb_broadcast_result = rs ^ rt;
-                `SRL: out_cdb_broadcast_result = rs >> rt;
-                `SRA: out_cdb_broadcast_result = rs >>> rt;
-                `OR:  out_cdb_broadcast_result = rs | rt;
-                `AND: out_cdb_broadcast_result = rs & rt;
+    always @(*) begin
+        if (ins_flag) begin
+            val_flag = `True;
+            val_idx = ROB_idx;
+            case (insty)
+                `ADD   : val = val1 + val2;
+                `ADDI  : val = val1 + val2;
+                `SUB   : val = val1 - val2;
+                `XOR   : val = val1 ^ val2;
+                `XORI  : val = val1 ^ val2;
+                `OR    : val = val1 | val2;
+                `ORI   : val = val1 | val2;
+                `AND   : val = val1 & val2;
+                `ANDI  : val = val1 & val2;
+                `SLL   : val = val1 << val2[4:0];
+                `SLLI  : val = val1 << val2[4:0];
+                `SRL   : val = val1 >> val2[4:0];
+                `SRLI  : val = val1 >> val2[4:0];
+                `SRA   : val = $signed(val1) >> val2[4:0];
+                `SRAI  : val = $signed(val1) >> val2[4:0];
+                `SLT   : val = $signed(val1) < $signed(val2);
+                `SLTI  : val = $signed(val1) < $signed(val2);
+                `SLTU  : val = val1 < val2;
+                `SLTIU : val = val1 < val2;
+                `BEQ   : val = val1 == val2;
+                `BNE   : val = val1 != val2;
+                `BLT   : val = $signed(val1) < $signed(val2);
+                `BGE   : val = $signed(val1) >= $signed(val2);
+                `BLTU  : val = val1 < val2;
+                `BGEU  : val = val1 >= val2;
+                `JALR  : val = (val1 + val2) & ~(32'b1);
+                default: val = `null32;
             endcase
         end
+        else begin
+            val_flag = `False;
+            val_idx = `null4;
+            val = `null32;
+        end
     end
-endmodule //alu
+    
+endmodule

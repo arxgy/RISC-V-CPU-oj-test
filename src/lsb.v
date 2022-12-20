@@ -1,309 +1,242 @@
-//A load/Store Queue for execute stage with inner Address Adder.
-`include "def.v"
-module lsb (
-    input  wire     in_clk,
-    input  wire     in_rst,
-    input  wire     in_rdy,
-    input  wire     in_flush_enable,
-    output wire     out_capacity_full,
-    //collect with control-signal
+`include "defines.v"
 
-    input  wire     in_decoder_assign_enable,
-    input  wire     [`OPERATOR_WIDTH] in_decoder_type,
-    input  wire     [`DATA_WIDTH] in_decoder_imm,
-    input  wire     [`ROB_WIDTH]  in_decoder_Qj,
-    input  wire     [`ROB_WIDTH]  in_decoder_Qk,
-    input  wire     [`DATA_WIDTH] in_decoder_Vj,
-    input  wire     [`DATA_WIDTH] in_decoder_Vk,
-    input  wire     [`ROB_WIDTH]  in_decoder_dest,
-    input  wire     [`ADDRESS_WIDTH] in_decoder_pc,
-    //connect with Decoder
+module LSB (
+    input  wire             clk, rst, rdy, 
+    input  wire             jp_wrong,                                   // 跳转错误
 
-    input  wire     in_rob_store_enable,    //pop 
-    input  wire     in_rob_io_read_commit,
-    output reg      out_rob_store_over,
-    //connect with ROB
+    // CDB
+    output wire             val_flag_LSB, 
+    output wire [`RBID]     val_idx_LSB, 
+    output wire [`RLEN]     val_LSB, 
 
-    output reg      out_dispatch_load_requesting,
-    output reg      [`ADDRESS_WIDTH] out_dispatch_load_addr,
-    output reg      [`RW_STYLE_WIDTH] out_dispatch_load_style,
-    input  wire     [`DATA_WIDTH] in_dispatch_load_value,
-    input  wire     in_load_req_enable,
-    input  wire     in_load_data_enable,
+    // Decoder
+    input  wire             ins_flag, 
+    input  wire [ 2: 0]     insty, 
+    input  wire             rs1_ready, rs2_ready, 
+    input  wire [`RLEN]     reg1, reg2, imm, 
+    output wire             LSB_full, 
 
-    output reg      out_dispatch_store_requesting,
-    output reg      [`ADDRESS_WIDTH] out_dispatch_store_addr,
-    output reg      [`RW_STYLE_WIDTH] out_dispatch_store_style,
-    output reg      [`DATA_WIDTH] out_dispatch_store_value, 
-    input  wire     in_store_req_enable,
-    //connect with dispatcher 
+    // ROB
+    input  wire [`RBID]     new_ROB_idx,
+    input  wire [`RBID]     ROB_front,  
+    input  wire             store_flag, 
 
-    input  wire     in_alu_broadcast_enable,
-    input  wire     [`ROB_WIDTH]  in_alu_broadcast_reorder,
-    input  wire     [`DATA_WIDTH] in_alu_broadcast_result,
+    // RS
+    input  wire             val_flag_RS, 
+    input  wire [`RBID]     val_idx_RS, 
+    input  wire [`RLEN]     val_RS, 
 
-    output reg      out_cdb_broadcast_enable,
-    output reg      [`ROB_WIDTH]  out_cdb_reorder,
-    output reg      [`DATA_WIDTH] out_cdb_result,
-    output reg      out_cdb_io_read 
-    //cdb
+    // MemCtrl
+    input  wire              val_flag, 
+    input  wire [31: 0]      val_in, 
+    output wire              val_flag_MC, 
+    output wire [ 2: 0]      insty_MC, 
+    output wire [31: 0]      addr_out, 
+    output wire [31: 0]      val_out 
 );
-    integer iter, lsb_iter, alu_iter;
-    reg                    queue_empty, io_misbranched;
-    reg  [`QUEUE_WIDTH]    queue_head, queue_tail;
-    reg  [`DATA_WIDTH]     io_queue [`QUEUE_ENTRY];
-    reg                    entry_empty;
-    reg  [`LSB_WIDTH]      entry_head, entry_tail;
-    reg  [`OPERATOR_WIDTH] type_entry  [`LSB_ENTRY];
-    reg  [`DATA_WIDTH]     imm_entry   [`LSB_ENTRY];
-    reg  [`ROB_WIDTH]      qj_entry    [`LSB_ENTRY];
-    reg  [`ROB_WIDTH]      qk_entry    [`LSB_ENTRY];
-    reg  [`DATA_WIDTH]     vj_entry    [`LSB_ENTRY];
-    reg  [`DATA_WIDTH]     vk_entry    [`LSB_ENTRY];
-    reg  [`ROB_WIDTH]      dest_entry  [`LSB_ENTRY];
-    reg                    busy_entry  [`LSB_ENTRY];
-    reg                    store_wait ;
-    reg  [`ADDRESS_WIDTH]  pc_entry    [`LSB_ENTRY];
 
-    wire cdb_lsb_broadcast_enable  = out_cdb_broadcast_enable;
-    wire [`ROB_WIDTH]  cdb_lsb_broadcast_reorder = out_cdb_reorder; 
-    wire [`DATA_WIDTH] cdb_lsb_broadcast_result  = out_cdb_result;
-    //as lsb broadcast (last cycle)
-    reg  [`OPERATOR_WIDTH] last_load_type;
-    reg  [`ROB_WIDTH]      last_load_dest;
-    reg                    last_load_io;
+    reg             full;
+    reg  [`LSID]    front, rear, commit_cnt;
 
-    wire [`DATA_WIDTH]     head_entry_addr;
-    assign out_capacity_full = (entry_head == entry_tail + 4'd1 || ((entry_tail == entry_head) && !entry_empty));
-    assign head_entry_addr   = vj_entry[entry_head]+imm_entry[entry_head];
+    reg  [ 2: 0]    ins         [`LSSZ];
+    reg  [`LSSZ]    val1_ready, val2_ready, iscommit;
+    reg  [`RLEN]    val1        [`LSSZ];
+    reg  [`RLEN]    val2        [`LSSZ];
+    reg  [`RLEN]    val_imm     [`LSSZ];
+    reg  [`RBID]    ROB_idx     [`LSSZ];
 
-    wire [`OPERATOR_WIDTH] dbg_head_type = type_entry[entry_head];
-    wire [`DATA_WIDTH] dbg_head_imm = imm_entry[entry_head];
-    wire [`ROB_WIDTH] dbg_head_qj = qj_entry[entry_head];
-    wire [`ROB_WIDTH] dbg_head_qk = qk_entry[entry_head];
-    wire [`DATA_WIDTH] dbg_head_vj = vj_entry[entry_head];
-    wire [`DATA_WIDTH] dbg_head_vk = vk_entry[entry_head];
-    wire [`ADDRESS_WIDTH] dbg_head_pc = pc_entry[entry_head];
-    wire [`ROB_WIDTH]   dbg_head_dest = dest_entry[entry_head];
-    always @(posedge in_clk) begin          //clear all
-        if (in_rst) begin
-            io_misbranched     <= `FALSE;
-            store_wait         <= `FALSE;
-            out_rob_store_over <= `FALSE;
-            queue_head <= 4'd0;     queue_tail <= 4'd0;     queue_empty <= `TRUE;
-            entry_head <= 4'd0;     entry_tail <= 4'd0;     entry_empty <= `TRUE;
-            last_load_dest     <= `ZERO_ROB;    //no load
-            last_load_io       <= `FALSE;
-            out_rob_store_over <= `FALSE;
-            out_dispatch_load_requesting  <= `FALSE;
-            out_dispatch_store_requesting <= `FALSE;
-            out_cdb_broadcast_enable      <= `FALSE;
-            for (iter = 0 ; iter < `LSB_SIZE ; iter = iter+1 ) begin
-                busy_entry[iter]  <= `FALSE;
+    reg             now_val_flag_MC, next_val_flag_MC;
+    wire [31: 0]    now_addr, next_addr;
+    assign now_addr = val1[front] + val_imm[front];
+    assign next_addr = val1[-(~front)] + val_imm[-(~front)];
+
+    // assign LSB_full = full;
+    assign LSB_full = val_flag ? (full && ins_flag) : (full || (ins_flag && (front == (-(~rear)))));
+
+    assign val_flag_LSB = val_flag && !(ins[front][2] && ins[front][1:0] != 0);
+    assign val_idx_LSB = ROB_idx[front];
+    assign val_LSB = val_in;
+
+    assign val_flag_MC = val_flag ? next_val_flag_MC : now_val_flag_MC;
+    assign insty_MC = val_flag ? ins[-(~front)] : ins[front];
+    assign addr_out = val_flag ? next_addr : now_addr;
+    assign val_out = val_flag ? val2[-(~front)] : val2[front];
+
+    always @(*) begin
+        if ((full || front != rear) && val1_ready[front] && val2_ready[front] && rdy) begin
+            if (ins[front] == `SB || ins[front] == `SH || ins[front] == `SW) 
+                now_val_flag_MC = iscommit[front];
+            else
+                now_val_flag_MC = (now_addr[17:16] == 2'b11) ? (ROB_idx[front] == ROB_front && !jp_wrong) : `True;
+        end
+        else 
+            now_val_flag_MC = `False;
+
+        if ((full || front != rear) && -(~front) != rear && val1_ready[-(~front)] && val2_ready[-(~front)] && rdy) begin
+            if (ins[-(~front)] == `SB || ins[-(~front)] == `SH || ins[-(~front)] == `SW) 
+                next_val_flag_MC = iscommit[-(~front)];
+            else
+                next_val_flag_MC = (next_addr[17:16] == 2'b11) ? (ROB_idx[-(~front)] == ROB_front && !jp_wrong) : `True;
+        end
+        else 
+            next_val_flag_MC = `False;
+    end
+
+    integer i;
+
+    // always @(*) begin
+    //     // $display("commit_cnt", commit_cnt);
+    //     for (i = 0; i < 16; i = i + 1) begin
+    //         $display("")
+    //     end
+    // end
+
+    reg             new_rs1_ready, new_rs2_ready;                       // 当前输入指令的 rs1 和 rs2 是否拿到真值
+    reg  [`RLEN]    new_reg1, new_reg2;                                 // 当前输入指令的 rs1 和 rs2 的值
+
+    always @(*) begin
+        if (!rs1_ready) begin
+            if (val_flag_RS && val_idx_RS == reg1[`RBID]) begin
+                new_rs1_ready = `True;
+                new_reg1 = val_RS;
             end
-        end 
-        else if (in_rdy) begin
-            if (in_flush_enable) begin      //clear, but maintain queue, maintain dispatch
-                if (queue_empty) io_misbranched <= `FALSE;
-                else             io_misbranched <= `TRUE;
-                store_wait <= `FALSE;
-                entry_head <= 4'd0;     entry_tail <= 4'd0;     entry_empty <= `TRUE;
-                last_load_dest <= `ZERO_ROB;
-                out_rob_store_over <= `FALSE;
-                out_dispatch_load_requesting  <= `FALSE;
-                out_dispatch_store_requesting <= `FALSE;
-                out_cdb_broadcast_enable      <= `FALSE;
-                for (iter = 0 ; iter < `LSB_SIZE ; iter = iter+1 ) begin
-                    busy_entry[iter]  <= `FALSE;
-                end
-
-                if (in_load_data_enable && last_load_io) begin
-                    queue_empty <= `FALSE;
-                    queue_tail  <= queue_tail + 4'd1;
-                    case (last_load_type)
-                        `LB: io_queue[queue_tail] <= {{24{in_dispatch_load_value[7]}}, in_dispatch_load_value[7:0] };
-                        `LBU:io_queue[queue_tail] <= {{24{1'b0}}, in_dispatch_load_value[7:0] };
-                    endcase 
-                end
+            else if (val_flag_LSB && val_idx_LSB == reg1[`RBID])begin
+                new_rs1_ready = `True;
+                new_reg1 = val_LSB;
             end
             else begin
-                //queue pop
-                if (in_rob_io_read_commit) begin
-                    queue_head <= queue_head + 4'd1;
-                    if (queue_tail == queue_head + 4'd1) begin
-                        queue_empty    <= `TRUE;
-                        io_misbranched <= `FALSE;
-                    end
+                new_rs1_ready = rs1_ready;
+                new_reg1 = reg1;
+            end
+        end
+        else begin
+            new_rs1_ready = rs1_ready;
+            new_reg1 = reg1;
+        end
+        
+        if (!rs2_ready) begin
+            if (val_flag_RS && val_idx_RS == reg2[`RBID]) begin
+                new_rs2_ready = `True;
+                new_reg2 = val_RS;
+            end
+            else if (val_flag_LSB && val_idx_LSB == reg2[`RBID])begin
+                new_rs2_ready = `True;
+                new_reg2 = val_LSB;
+            end
+            else begin
+                new_rs2_ready = rs2_ready;
+                new_reg2 = reg2;
+            end
+        end
+        else begin
+            new_rs2_ready = rs2_ready;
+            new_reg2 = reg2;
+        end
+    end
+
+    reg [31: 0] debug_now;
+    always @(posedge clk) begin
+        // if (ins_flag && new_reg1 == 18'h30000 && insty[2] && insty[1:0] != 0) begin
+        //     $display("debug_now:", "%h", debug_now);
+        //     $display("insty:", "%h", insty);
+        //     $display("rear:", "%h", rear);
+        //     $display("rs1_ready:", "%h", new_rs1_ready);
+        //     $display("reg1:", "%h", new_reg1);
+        //     $display("rs2_ready:", "%h", new_rs2_ready);
+        //     $display("reg2:", "%h", new_reg2);
+        //     $display;
+        // end
+
+        // if (addr_out == 18'h1FFC4) begin
+        //     $display("debug_now:", "%h", debug_now);
+        //     $display("val_flag_MC:", "%h", val_flag_MC);
+        //     $display("insty_MC:", "%h", insty_MC);
+        //     $display("addr_out:  ", "%h",  addr_out);
+        //     $display("val_out:  ", "%h",  val_out);
+        //     $display("front:", "%h", ROB_idx[front]);
+        //     $display("val1:", "%h", val1[front]);
+        //     $display("val2:", "%h", val2[front]);
+        //     $display("imm:", "%h", val_imm[front]);
+        //     $display;
+        // end
+
+
+        debug_now <= debug_now + 1;
+        // $display("LSB: ", debug_now);
+        if (rst)
+            debug_now <= 0;
+        if (rst) begin
+            full <= `False;
+            front <= `null4;
+            rear <= `null4;
+            commit_cnt <= `null4;
+            // $display("commit_cnt_new:", commit_cnt);
+            val1_ready <= `null16;
+            val2_ready <= `null16;
+            iscommit <= `null16;
+        end
+        else if (!rdy) begin
+            
+        end
+        else if (jp_wrong) begin
+            full <= !val_flag && commit_cnt == `LSBSIZE;
+            rear <= front + commit_cnt + (val_flag && !(ins[front][2] && ins[front][1:0] != 0)); 
+            
+            if (val_flag)
+                front <= -(~front);
+            commit_cnt <= commit_cnt - (val_flag && ins[front][2] && ins[front][1:0] != 0);
+        end 
+
+        if (!rst && rdy && !jp_wrong)
+        begin
+            full <= val_flag ? (full && ins_flag) : (full || (ins_flag && (front == (-(~rear)))));
+
+            if (ins_flag) begin
+                rear <= -(~rear);
+                val1_ready[rear] <= new_rs1_ready;
+                val2_ready[rear] <= new_rs2_ready;
+                ROB_idx[rear] <= new_ROB_idx;
+                iscommit[rear] <= `False;
+                ins[rear] <= insty;
+
+                val1[rear] <= new_reg1;
+                val2[rear] <= new_reg2;
+                val_imm[rear] <= imm;
+            end
+
+            if (val_flag)
+                front <= -(~front);
+
+            commit_cnt <= commit_cnt - (val_flag && ins[front][2] && ins[front][1:0] != 0) + store_flag;
+
+            if (store_flag) begin
+                iscommit[front + commit_cnt] <= `True;
+                // $display("front:", front);
+                // $display("commit_cnt:", commit_cnt); 
+            end
+            
+            for (i = 0; i < `LSBSIZE; i = i + 1)
+            if (full || i != rear)
+            begin
+                if (val_flag_RS && !val1_ready[i] && val1[i][`RBID] == val_idx_RS) begin
+                    val1_ready[i] <= `True;
+                    val1[i] <= val_RS;
                 end
-                //assign entry
-                if (in_decoder_assign_enable) begin
-                    entry_tail  <= entry_tail + 4'd1;
-                    entry_empty <= `FALSE;
-                    type_entry[entry_tail] <= in_decoder_type;
-                    imm_entry[entry_tail]  <= in_decoder_imm;
-                    qj_entry[entry_tail]   <= in_decoder_Qj;
-                    qk_entry[entry_tail]   <= in_decoder_Qk;
-                    vj_entry[entry_tail]   <= in_decoder_Vj;
-                    vk_entry[entry_tail]   <= in_decoder_Vk;
-                    dest_entry[entry_tail] <= in_decoder_dest;
-                    busy_entry[entry_tail] <= `TRUE;
-                    pc_entry[entry_tail]   <= in_decoder_pc;
+                if (val_flag_LSB && !val1_ready[i] && val1[i][`RBID] == val_idx_LSB) begin
+                    val1_ready[i] <= `True;
+                    val1[i] <= val_LSB;
                 end
 
-                //accept lsb/alu broadcast 
-                if (cdb_lsb_broadcast_enable) begin
-                    for (lsb_iter = 0 ; lsb_iter < `LSB_SIZE ; lsb_iter = lsb_iter+1) begin
-                        if (in_decoder_assign_enable && lsb_iter == entry_tail) begin      //special judge
-                            if (in_decoder_Qj == cdb_lsb_broadcast_reorder) begin 
-                                qj_entry[lsb_iter] <= `ZERO_ROB;
-                                vj_entry[lsb_iter] <= cdb_lsb_broadcast_result;
-                            end
-                            if (in_decoder_Qk == cdb_lsb_broadcast_reorder) begin
-                                qk_entry[lsb_iter] <= `ZERO_ROB;
-                                vk_entry[lsb_iter] <= cdb_lsb_broadcast_result;
-                            end
-                        end
-                        else if (busy_entry[lsb_iter]) begin    //normal broadcast
-                            if (qj_entry[lsb_iter] == cdb_lsb_broadcast_reorder) begin
-                                qj_entry[lsb_iter] <= `ZERO_ROB;
-                                vj_entry[lsb_iter] <= cdb_lsb_broadcast_result;
-                            end
-                            if (qk_entry[lsb_iter] == cdb_lsb_broadcast_reorder) begin
-                                qk_entry[lsb_iter] <= `ZERO_ROB;
-                                vk_entry[lsb_iter] <= cdb_lsb_broadcast_result;
-                            end
-                        end
-                    end
+                if (val_flag_RS && !val2_ready[i] && val2[i][`RBID] == val_idx_RS) begin
+                    val2_ready[i] <= `True;
+                    val2[i] <= val_RS;
                 end
-                if (in_alu_broadcast_enable)  begin
-                    for (alu_iter = 0 ; alu_iter < `RS_SIZE ; alu_iter = alu_iter+1) begin
-                        if (in_decoder_assign_enable && alu_iter == entry_tail) begin
-                            if (in_decoder_Qj == in_alu_broadcast_reorder) begin
-                                qj_entry[alu_iter] <= `ZERO_ROB;
-                                vj_entry[alu_iter] <= in_alu_broadcast_result;
-                            end
-                            if (in_decoder_Qk == in_alu_broadcast_reorder) begin
-                                qk_entry[alu_iter] <= `ZERO_ROB;
-                                vk_entry[alu_iter] <= in_alu_broadcast_result;
-                            end
-                        end
-                        else if (busy_entry[alu_iter]) begin
-                            if (qj_entry[alu_iter] == in_alu_broadcast_reorder) begin
-                                qj_entry[alu_iter] <= `ZERO_ROB;
-                                vj_entry[alu_iter] <= in_alu_broadcast_result;
-                            end
-                            if (qk_entry[alu_iter] == in_alu_broadcast_reorder) begin
-                                qk_entry[alu_iter] <= `ZERO_ROB;
-                                vk_entry[alu_iter] <= in_alu_broadcast_result;
-                            end
-                        end
-                    end
-                end 
-
-                if (in_load_data_enable) begin    
-                    out_cdb_broadcast_enable <= `TRUE;
-                    out_cdb_reorder <= last_load_dest;
-                    out_cdb_io_read <= last_load_io;
-                    last_load_dest <= `ZERO_ROB;
-                    case (last_load_type)
-                        `LB: out_cdb_result <= {{24{in_dispatch_load_value[7]}}, in_dispatch_load_value[7:0] };
-                        `LH: out_cdb_result <= {{16{in_dispatch_load_value[15]}},in_dispatch_load_value[15:0]};
-                        `LW: out_cdb_result <= in_dispatch_load_value;
-                        `LBU:out_cdb_result <= {{24{1'b0}}, in_dispatch_load_value[7:0] };
-                        `LHU:out_cdb_result <= {{16{1'b0}}, in_dispatch_load_value[15:0]};
-                    endcase
-
-                    if (last_load_io) begin     //io_load: add to io_queue
-                        queue_empty <= `FALSE;
-                        queue_tail  <= queue_tail + 4'd1;
-                        case (last_load_type)
-                            `LB: io_queue[queue_tail] <= {{24{in_dispatch_load_value[7]}}, in_dispatch_load_value[7:0] };
-                            `LBU:io_queue[queue_tail] <= {{24{1'b0}}, in_dispatch_load_value[7:0] };
-                        endcase 
-                    end
-                end
-                else begin
-                    out_cdb_broadcast_enable <= `FALSE;
-                end
-
-                out_rob_store_over            <= `FALSE;
-                out_dispatch_load_requesting  <= `FALSE;
-                out_dispatch_store_requesting <= `FALSE;
-                if (!entry_empty) begin
-                    if (is_store(type_entry[entry_head]) && qj_entry[entry_head] == `ZERO_ROB && qk_entry[entry_head] == `ZERO_ROB && in_rob_store_enable && in_store_req_enable) begin
-                        if (!store_wait) begin      //dispatch is empty, push to dispatch
-                            out_rob_store_over <= `FALSE;
-                            store_wait <= `TRUE;
-                            out_dispatch_store_requesting <= `TRUE;
-                            out_dispatch_store_addr  <= head_entry_addr;
-                            out_dispatch_store_value <= vk_entry[entry_head];
-                            case (type_entry[entry_head])
-                                `SB: out_dispatch_store_style <= `RW_BYTE;
-                                `SH: out_dispatch_store_style <= `RW_HALF_WORD;
-                                `SW: out_dispatch_store_style <= `RW_WORD;
-                            endcase    
-                        end
-                        else begin                 //this store is over, inform rob to commit
-                            out_rob_store_over <= `TRUE;
-                            store_wait <= `FALSE;
-                            busy_entry[entry_head] <= `FALSE;
-                            entry_head <= entry_head + 4'd1;
-                            if (entry_tail == entry_head + 4'd1 && !in_decoder_assign_enable) entry_empty <= `TRUE;
-                        end
-                    end
-                    else if (is_load(type_entry[entry_head]) && qj_entry[entry_head] == `ZERO_ROB) begin    
-                        if (head_entry_addr[17:16] == 2'b11 && io_misbranched) begin       //read from queue
-                            if (!in_load_data_enable) begin          //to avoid data broadcast collision
-                                out_cdb_broadcast_enable  <= `TRUE;
-                                out_cdb_reorder           <=  dest_entry[entry_head];
-                                out_cdb_result            <=  io_queue[entry_head];
-                                out_cdb_io_read           <= `TRUE;
-
-                                busy_entry[entry_head]    <= `FALSE;
-                                entry_head <= entry_head + 4'd1;
-                                if (entry_tail == entry_head + 4'd1 && !in_decoder_assign_enable) entry_empty <= `TRUE;
-                                queue_head <= queue_head + 4'd1;
-                                if (queue_tail == queue_head + 4'd1) begin
-                                    queue_empty <= `TRUE;
-                                    io_misbranched <= `FALSE;
-                                end
-                            end
-                            else begin
-                                out_cdb_broadcast_enable <= `FALSE;
-                            end
-                        end
-                        else if (in_load_req_enable && last_load_dest == `ZERO_ROB) begin      
-                            //last load execute over! another delay, so sad
-                            out_dispatch_load_requesting <= `TRUE;
-                            out_dispatch_load_addr <= head_entry_addr;
-                            case (type_entry[entry_head])
-                                `LB: out_dispatch_load_style <= `RW_BYTE;
-                                `LH: out_dispatch_load_style <= `RW_HALF_WORD;
-                                `LW: out_dispatch_load_style <= `RW_WORD;
-                                `LBU:out_dispatch_load_style <= `RW_BYTE;
-                                `LHU:out_dispatch_load_style <= `RW_HALF_WORD;
-                            endcase
-                            last_load_io   <= head_entry_addr[17:16] == 2'b11;
-                            last_load_dest <= dest_entry[entry_head];
-                            last_load_type <= type_entry[entry_head];
-                            busy_entry[entry_head] <= `FALSE;
-
-                            entry_head     <= entry_head + 4'd1;
-                            if (entry_tail == entry_head + 4'd1 && !in_decoder_assign_enable) entry_empty <= `TRUE;
-                        end
-                    end
+                if (val_flag_LSB && !val2_ready[i] && val2[i][`RBID] == val_idx_LSB) begin
+                    val2_ready[i] <= `True;
+                    val2[i] <= val_LSB;
                 end
             end
         end
     end
-    function reg is_store(input [`OPERATOR_WIDTH] type);
-        begin
-            is_store = (type == `SB || type == `SH ||  type == `SW);
-        end
-    endfunction
-    function reg is_load (input [`OPERATOR_WIDTH] type);
-        begin
-            is_load =  (type == `LB || type == `LH ||  type == `LW || type == `LBU|| type == `LHU);
-        end
-    endfunction
-endmodule //LSbuffer
+    
+endmodule
