@@ -17,23 +17,11 @@ riscv_top #(.SIM(1)) top(
 initial begin
   clk=0;
   rst=1;
-  repeat(1) #1 clk=!clk;
+  repeat(50) #1 clk=!clk;
   rst=0; 
-  forever begin
-    #1 clk=!clk;
-    // if ($time >= 20000) begin
-    //   $finish;
-    // end
-  end
-  // forever begin
-  //   #1000 rdy = !rdy;
-  // end
-  
+  forever #1 clk = !clk;
   $finish;
 end
 
-initial begin
-  $dumpfile("testbench.vcd");
-  $dumpvars;
-end
+
 endmodule
