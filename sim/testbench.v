@@ -1,5 +1,6 @@
 // testbench top module file
 // for simulation only
+
 `timescale 1ns/1ps
 module testbench;
 
@@ -19,14 +20,7 @@ initial begin
   rst=1;
   repeat(50) #1 clk=!clk;
   rst=0; 
-  forever begin
-    $display($time, " ", clk);
-    #1 clk=!clk;
-    // if ($time >= 100) begin
-    //   $finish;
-    // end
-  end
-
+  forever #1 clk = !clk;
   $finish;
 end
 
