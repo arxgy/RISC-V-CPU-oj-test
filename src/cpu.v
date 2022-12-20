@@ -1,5 +1,6 @@
 // RISCV32I CPU top module
 // port modification allowed for debugging purposes
+`include "def.v"
 // `include "alu.v"
 // `include "decoder.v"
 // `include "dispatcher.v"
