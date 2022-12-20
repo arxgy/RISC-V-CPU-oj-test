@@ -1,5 +1,5 @@
 //Reserve Station module (single module supported)
-`include "def.v"
+// `include "def.v"
 module rs (
     input  wire     in_clk,
     input  wire     in_rst,

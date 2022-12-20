@@ -1,5 +1,5 @@
 //A Register File with #Reorder tag.
-`include "def.v"
+// `include "def.v"
 module register (
     input  wire     in_clk,
     input  wire     in_rst,

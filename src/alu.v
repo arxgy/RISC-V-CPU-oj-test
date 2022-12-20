@@ -1,6 +1,6 @@
 //Just a Calculator. designed for calculate x[rd] value
 //pc is handled by adder in reserve station.
-`include "def.v"
+// `include "def.v"
 module alu (
     input  wire                       in_enable,
     input  wire     [`OPERATOR_WIDTH] type,

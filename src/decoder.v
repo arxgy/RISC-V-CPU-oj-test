@@ -1,6 +1,6 @@
 //Decode instr, issue instr into LSbuffer/RS and ROB.
 //conbinational circuit
-`include "def.v"
+// `include "def.v"
 module decoder (
     input  wire     in_decode_enable,   //fetch_enable & !stall & in_rdy
     //connect with control-signal
