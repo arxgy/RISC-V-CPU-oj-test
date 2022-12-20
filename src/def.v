@@ -19,11 +19,8 @@
 `define MEM_WIDTH 7:0
 `define FETCH_WIDTH 2:0
 `define QUEUE_WIDTH 3:0
-`define TAG_WIDTH 6:0
-`define INDEX_WIDTH 10:0
-`define TAKEN_WIDTH 1:0
-`define TAG_FIELD 17:11
-`define INDEX_FIELD 10:0
+`define TAG_WIDTH 23:0
+`define INDEX_WIDTH 7:0
 //define array
 `define REG_ENTRY 31:0
 `define RS_ENTRY  15:0
@@ -31,8 +28,7 @@
 `define ROB_ENTRY 15:0
 `define FETCH_ENTRY 7:0
 `define QUEUE_ENTRY 15:0
-`define CACHE_ENTRY 2047:0
-`define PREDICT_ENTRY 1023:0
+`define CACHE_ENTRY 255:0
 
 `define INST_TYPE_WIDTH 6:0
 `define INST_FUNC3_WIDTH 2:0
@@ -46,8 +42,7 @@
 `define MEM_SIZE 256
 `define FETCH_SIZE 8
 `define QUEUE_SIZE 16
-`define CACHE_SIZE 2048
-`define PREDICT_SIZE 1024
+`define CACHE_SIZE 256
 //default value
 `define NOP_INSTR 32'b0 
 `define ZERO_DATA 32'b0
@@ -162,6 +157,7 @@
 `define LOAD_STATUS 2'b10
 `define STORE_STATUS 2'b11
 
+`define ZERO_REG 5'd0
 
 //dispatcher read/write-method
 `define RW_NONE 2'b00
@@ -169,124 +165,9 @@
 `define RW_HALF_WORD  2'b10
 `define RW_WORD 2'b11 
 
-//predictor
-`define STRONG_NOT_TAKEN 2'b00
-`define WEAK_NOT_TAKEN 2'b01
-`define WEAK_TAKEN 2'b10
-`define STRONG_TAKEN 2'b11
+//lsb entry status
+`define NULL  2'b11
+`define FINE  2'b00
+`define VISIT 2'b01
+`define READY 2'b10
 
-`define TAKEN  1'b1
-`define NOT_TAKEN 1'b0
-//for inst queue sync
-`define NULL_PRE 2'b00
-`define TAKE_PRE 2'b01
-`define NOT_TAKE_PRE 2'b10
-
-`define GRANT_PC\
-begin\
-    push_status <= `PC_STATUS;\
-    push_cycle  <=  3'd1;\
-    out_mem_addr      <= pc_request_addr;\
-    out_mem_wr_signal <= `READ_SIGNAL;\
-end
-`define GRANT_LOAD\
-begin\
-    push_status <= `LOAD_STATUS;\
-    push_cycle  <=  3'd1;\
-    out_mem_addr <= load_request_addr;\
-    out_mem_wr_signal <= `READ_SIGNAL;\
-end
-`define GRANT_STORE\
-begin\
-    push_status <= `STORE_STATUS;\
-    push_cycle  <=  3'd1;\
-    out_mem_addr <= store_request_addr;\
-    out_mem_data <= store_request_data[7:0];\
-    out_mem_wr_signal <= `WRITE_SIGNAL;\
-end
-`define GRANT_OUT_STORE\
-begin\
-    store_stage <= `TRUE;\
-    push_status <= `STORE_STATUS;\
-    push_cycle  <=  3'd1;\
-    out_mem_addr <= store_request_addr;\
-    out_mem_data <= store_request_data[7:0];\
-    out_mem_wr_signal <= `WRITE_SIGNAL;\
-end
-`define GRANT_IDLE\
-begin\
-    out_mem_addr <= `ZERO_ADDR;\
-    out_mem_wr_signal <= `READ_SIGNAL;\
-    push_status <= `IDLE_STATUS;\
-    push_cycle  <=  3'd0;\
-end
-
-`define PUSH_PC\
-begin\
-    push_status <= `PC_STATUS;\
-    push_cycle  <=  push_cycle + 3'd1;\
-    out_mem_addr <= pc_request_addr + push_cycle;\
-    out_mem_wr_signal <= `READ_SIGNAL;\
-end
-`define PUSH_LOAD\
-begin\
-    push_status <= `LOAD_STATUS;\
-    push_cycle  <= push_cycle + 3'd1;\
-    out_mem_addr <= load_request_addr + push_cycle;\
-    out_mem_wr_signal <= `READ_SIGNAL;\
-end
-
-// `define ARBIT_IDLE\
-// begin\
-//     if (pc_buffering) `GRANT_PC\
-//     else if (load_buffering) begin\
-//         if (load_request_addr[17:16] != 2'b11)       `GRANT_LOAD\
-//         else if (store_buffering && store_request_addr[17:16] != 2'b11) `GRANT_STORE\
-//         else                                                            `GRANT_IDLE\
-//     end\
-//     else if (store_buffering) begin\
-//         if (store_request_addr[17:16] != 2'b11)                         `GRANT_STORE\   //normal store
-//         else if (mem_status == `IDLE_STATUS)         `GRANT_STORE\   //io store
-//         else                                                            `GRANT_IDLE\
-//     end\
-//     else `GRANT_IDLE\
-// end
-// `define ARBIT_PC\
-// begin\
-//     pc_buffering <= `FALSE;\
-//     if (load_buffering) begin\
-//         if (load_request_addr[17:16] != 2'b11 )       `GRANT_LOAD\
-//         else if (store_buffering && store_request_addr[17:16] != 2'b11) `GRANT_STORE\
-//         else                                                            `GRANT_IDLE\
-//     end\
-//     else if(store_buffering) begin\
-//         if (store_request_addr[17:16] != 2'b11)                         `GRANT_STORE\   //normal store
-//         else if (mem_status == `IDLE_STATUS)         `GRANT_STORE\   //io store
-//         else                                                            `GRANT_IDLE\
-//     end\
-//     else `GRANT_IDLE\
-// end
-
-// `define ARBIT_LOAD\
-// begin\
-//     load_buffering <= `FALSE;\
-//     if(store_buffering) begin\
-//         if (store_request_addr[17:16] != 2'b11)                         `GRANT_STORE\   //normal store
-//         else if (mem_status == `IDLE_STATUS)         `GRANT_STORE\   //io store
-//         else                                                            `GRANT_IDLE\
-//     end\
-//     else if (pc_buffering) `GRANT_PC\
-//     else `GRANT_IDLE\
-// end
-
-
-// `define ARBIT_STORE\
-// begin\
-//     store_buffering <= `FALSE;\
-//     if (pc_buffering) `GRANT_PC\
-//     else if (load_buffering) begin\
-//         if (load_request_addr[17:16] != 2'b11)       `GRANT_LOAD\
-//         else                                                            `GRANT_IDLE\
-//     end\
-//     else `GRANT_IDLE\
-// end
